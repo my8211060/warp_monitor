@@ -6,6 +6,88 @@
 
 ## 📝 更新日志
 
+### v1.4.3 (2026-08-07)
+
+**修复 warp-go 隧道死亡时不重连 ([issue #6](https://github.com/Michaol/warp_monitor/issues/6))**
+
+- **新增隧道级探测 `warpgo_tunnel_live()`**：`curl --interface WARP https://www.cloudflare.com/cdn-cgi/trace` 检 `warp=on/plus`，请求必须真正穿过隧道，替代不可靠的"进程存活"信源——warp-go 是常驻 daemon，隧道死亡时进程不退出、接口不消失，"进程活着"不等于"隧道健康"
+- **区分 'API 宕机' 与 '隧道死亡'**：探测通过 → 不误判重连；探测失败 → 判定连接丢失并触发重连
+- **修复硬重连接口判定**：`wg_alive` 改为模式感知（wg-quick 内核接口 / warp-go 用户态 TUN），修复 warp-go 下硬重连分支错误
+- **修复重连命令语义**：warp-go 运行态重连改用 `systemctl restart warp-go`（上游实锤：`warp-go o` 在接口存活时是"停止"而非重连）；down 态保留 `warp-go o`（上游 net() 全流程：轮询×5 + 配置回退）
+- 探测按预期栈钉协议族（仅 IPv4 机器不发 -6 请求）；测试套件新增 URL 感知 curl stub 与 8 个 warp-go 用例（43/43 全过）
+
+<details>
+<summary>历史版本</summary>
+
+### v1.4.2 (2026-08-02)
+
+**第三轮代码审查修复（set -e 健壮性）**
+
+- **修复 attempt_reconnect 返回非零时 set -e 崩脚本**：v1.4.1 修复退出码后引入的回归——重连命令失败会导致脚本直接退出，跳过复检和重试。调用处加 `|| true`
+- **修复 existing_job grep -F 无匹配时崩溃**：crontab 竞态下 `grep -F` 无匹配触发 set -e，加 `|| true` 兜底
+- **cron 任务路径加引号**：SCRIPT_PATH 含空格时防止 cron 分词
+
+### v1.4.1 (2026-08-02)
+
+**代码审查修复**
+
+- **修复 socks5_port 赋值 set -e 崩溃**：`ss | grep | awk` 无匹配时脚本静默退出，加 `|| true` 兜底（影响 warp-cli/wireproxy 模式）
+- **修复重连退出码误报**：`if ! $cmd; then cmd_status=$?` 中 `!` 反转后 `$?` 恒为 0，改为 `if $cmd; then :; else cmd_status=$?`，诊断日志反映真实失败
+
+### v1.4.0 (2026-08-02)
+
+**新增 warp-go 兼容支持**
+
+- **warp-go 模式识别**：检测 `/opt/warp-go/warp-go` 二进制 + `pgrep warp-go` + `ip link show WARP`，识别 Go 用户态实现
+- **接口大小写**：warp-go 接口名为大写 `WARP`（非小写 `warp`），curl 检测改用 `--interface WARP`
+- **配置路径**：warp-go 配置在 `/opt/warp-go/warp.conf`（非 `/etc/wireguard/warp.conf`）
+- **重连命令**：warp-go 用 `/usr/bin/warp-go o`（非 `warp n/o`）
+- **非全局判定**：warp-go 用 `#AllowedIPs` 注释标记（非 `Table = off`），`read_expected_stack` 兼容注释格式
+- **第二信源**：warp-go 无内核 wg 握手，改用进程存活 + 接口存在作第二信源，防止 API 不可用时误判
+- **接口消失可重建**：warp-go 接口掉线但配置存在时，仍触发 `warp-go o` 重连
+- 不影响已工作的 wg-quick 路径（32/32 测试用例全过）
+
+### v1.3.0 (2026-08-01)
+
+**全面修复检测可靠性 + 兼容上游 v3.1.8+**
+
+- **修复引号 Bug**：`curl "$extra_curl_opts"` 把 `--interface warp` 当单参数导致所有模式检测失败，重构为显式模式参数传递（wg/socks5/global）
+- **修复接口消失不重连**：重连命令赋值移出 `wg show warp` 分支，只要 warp.conf 存在即可重连重建
+- **修复复检误判**：检测 API 不可用时以 wg 握手新鲜度（90s）为第二信源，避免"重连成功但复检仍 N/A"
+- **修复 crontab SIGPIPE**：管道写 crontab 在 `set -euo pipefail` 下可能被 SIGPIPE 杀死，改用临时文件
+- **兼容性加固**：`AllowedIPs` 解析放宽支持同行格式；兼容上游 v3.1.8~v3.2.6 全部模板变体
+- **检测增强**：增加 IPv4/IPv6 ping 预检（与上游端点一致）；API 改用 HTTPS+`-k`+2s 超时
+- **重连命令失败不再炸脚本**：`if ! cmd` 模式替代裸执行
+- **上游版本标注**：v3.2.6（兼容 v3.1.8+）
+
+### v1.2.3 (2026-05-01)
+
+**同步上游 v3.2.4 更新与代码质量优化**
+
+- **同步上游修正**：跟随 fscarmen/warp v3.2.4 验证并同步兼容性
+- **性能优化**：将 API 检测超时缩短至 5s，并增加 3s 连接超时，大幅提升异常环境下的响应速度
+- **智能模式识别**：新增对官方客户端 (warp-cli) 工作模式（代理/全局）的自动识别
+- **增强重连可靠性**：重构硬重连逻辑，使用显式命令替代字符串处理，并优化了 `client` 模式下的重连路径
+- **故障诊断增强**：在所有重连尝试失败时，输出当前脚本及上游依赖版本，便于快速定位问题
+- **文档更新**：更新历史记录，将旧版本说明移入折叠块，保持文档整洁
+
+### v1.2.2 (2026-03-23)
+
+**代码质量与功能增强**
+
+- **修复变量引用风险**：`curl` 命令中的参数变量添加引号，避免分词导致的异常
+- **改进 JSON 解析**：使用 `awk` 替代 `sed` 解析 API 返回的 JSON，与上游代码风格保持一致
+- **添加配置文件支持**：支持通过 `/etc/warp_monitor.conf` 自定义参数（日志路径、重试次数等）
+- **添加命令行参数**：支持 `-h/--help`、`-v/--version`、`-c/--config` 参数
+- **优化错误处理**：改进 `set -u` 模式下的变量未定义处理
+- **性能优化**：IPv4/IPv6 检测改为并行执行，提升检测速度
+
+### v1.2.1 (2026-02-23)
+
+跟随上游 fscarmen/warp v3.2.1 更新：
+
+- **IP API 域名切回**：上游将 `ip.cloudflare.now.cc` 切回 `ip.cloudflare.nyc.mn`，同步跟进
+
 ### v1.2.0 (2026-02-18)
 
 **诊断逻辑修复与重连策略优化**
@@ -38,6 +120,8 @@
 - **IP API 升级**：切换至 fscarmen 自建 API，提升 IP 信息获取速度和稳定性
 - **性能优化**：直连模式下减少一次 HTTP 请求，原先需分别请求 trace 和 IP 详情，现一次请求即可获取 WARP 状态、IP、国家和 ISP
 - **更新脚本**：若需更新到最新版本，请再次执行下面的 `wget` 或 `curl` 完整命令
+
+</details>
 
 ## ✨ 主要功能
 
@@ -88,6 +172,55 @@ curl -sSL -o /root/warp_monitor.sh "https://raw.githubusercontent.com/Michaol/wa
 - **查看日志文件**: `less /var/log/warp_monitor.log` 看完`q`退出。 btw：喜欢怎么看都行，cat/tail/grep……，less 倒不是每个发行版都有默认安装。
 
 之后，脚本将根据定时任务在后台静默运行，守护你的 WARP 连接。
+
+### 命令行参数
+
+脚本支持以下命令行参数：
+
+```bash
+# 显示帮助信息
+/root/warp_monitor.sh -h
+
+# 显示版本信息
+/root/warp_monitor.sh -v
+
+# 使用自定义配置文件
+/root/warp_monitor.sh -c /path/to/config.conf
+```
+
+### 配置文件
+
+脚本支持通过配置文件自定义参数，默认配置文件路径为 `/etc/warp_monitor.conf`。
+
+**创建配置文件**：
+
+```bash
+cat > /etc/warp_monitor.conf << 'EOF'
+# WARP Monitor 配置文件
+# 取消注释并修改需要自定义的参数
+
+# 日志文件路径
+# LOG_FILE="/var/log/warp_monitor.log"
+
+# 最大重试次数
+# MAX_RETRIES=2
+
+# 重连等待时间（秒）
+# RECONNECT_WAIT_TIME=15
+
+# 硬重连延迟（秒）
+# HARD_RECONNECT_DELAY=3
+EOF
+```
+
+**配置文件参数说明**：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `LOG_FILE` | `/var/log/warp_monitor.log` | 日志文件路径 |
+| `MAX_RETRIES` | `2` | 每个阶段的最大重试次数 |
+| `RECONNECT_WAIT_TIME` | `15` | 重连后等待网络稳定的时间（秒） |
+| `HARD_RECONNECT_DELAY` | `3` | 硬重连时关闭接口后的延迟（秒） |
 
 ## 📊 输出示例
 
@@ -142,6 +275,9 @@ rm -f /root/warp_monitor.sh
 # 3. 删除 logrotate 配置
 rm -f /etc/logrotate.d/warp_monitor
 
-# 4. (可选) 删除日志文件
+# 4. (可选) 删除配置文件
+rm -f /etc/warp_monitor.conf
+
+# 5. (可选) 删除日志文件
 rm -f /var/log/warp_monitor.log*
 ```
